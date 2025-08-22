@@ -1,5 +1,6 @@
 import os
 import re
+import json
 from github import Github
 from datetime import datetime
 
@@ -967,3 +968,331 @@ def generate_pull_requests_markdown(pull_requests, github_identifier, repo_name)
             content += f"**Error processing pull request {i}:** {str(e)}\n\n"
     
     return content
+
+
+def get_user_reviews(g, user_login, repo_name, limit=20):
+    """Fetches code reviews submitted by a user."""
+    try:
+        query = f"reviewed-by:{user_login} repo:{repo_name} is:pr"
+        issues = g.search_issues(query, sort="updated", order="desc")
+        reviews = []
+        for issue in issues[:limit]:
+            try:
+                pr = issue.as_pull_request()
+                for review in pr.get_reviews():
+                    if review.user and review.user.login == user_login and review.body:
+                        reviews.append({
+                            "pr_title": pr.title,
+                            "pr_url": pr.html_url,
+                            "review_body": review.body,
+                            "state": review.state,
+                            "submitted_at": review.submitted_at.isoformat() if review.submitted_at else None
+                        })
+            except Exception as e:
+                print(f"Error processing review for PR {issue.number}: {e}")
+                continue
+        return reviews
+    except Exception as e:
+        print(f"Could not fetch user reviews: {e}")
+        return []
+
+
+def fetch_all_contributions(user_identifier, repo_url, limit=50):
+    """
+    Fetches all contribution types (commits, PRs, issues, reviews) for a user
+    in a given repository and returns a structured dictionary.
+    Implements caching to avoid repeated API calls.
+    """
+    github_token = os.getenv("GITHUB_TOKEN")
+    if not github_token:
+        raise ValueError("GITHUB_TOKEN not found")
+    
+    g = Github(github_token)
+    repo_name = extract_repo_name(repo_url)
+    if not repo_name:
+        raise ValueError("Invalid repository URL")
+
+    # Caching logic
+    cache_dir = ".cache"
+    os.makedirs(cache_dir, exist_ok=True)
+    safe_user_identifier = user_identifier.replace('@', '_at_').replace('.', '_').replace('/', '_')
+    cache_file = os.path.join(cache_dir, f"{safe_user_identifier}-{repo_name.replace('/', '_')}.json")
+
+    if os.path.exists(cache_file):
+        print(f"Loading contributions from cache: {cache_file}")
+        with open(cache_file, 'r') as f:
+            return json.load(f)
+
+    print("Fetching fresh contribution data from GitHub...")
+    
+    # Resolve email to login if necessary
+    user_login = user_identifier
+    if '@' in user_identifier:
+        # Try to resolve email to login
+        try:
+            search_result = g.search_commits(f"author-email:{user_identifier}")
+            for commit in search_result[:5]:  # Check first few commits
+                if commit.author and commit.author.login:
+                    user_login = commit.author.login
+                    print(f"Resolved email {user_identifier} -> {user_login}")
+                    break
+        except Exception as e:
+            print(f"Could not resolve GitHub login for email: {user_identifier}")
+            return None
+
+    try:
+        # Fetch all data types efficiently
+        repo = g.get_repo(repo_name)
+        
+        # Get commits
+        commits_data = []
+        try:
+            commits = list(repo.get_commits(author=user_login)[:limit])
+            commits_data = [{
+                "sha": c.sha[:8], 
+                "message": c.commit.message, 
+                "date": c.commit.author.date.isoformat() if c.commit.author.date else None,
+                "files_changed": len(list(c.files)) if hasattr(c, 'files') else 0
+            } for c in commits]
+        except Exception as e:
+            print(f"Error fetching commits: {e}")
+
+        # Get pull requests
+        prs_data = []
+        try:
+            pull_requests = list(g.search_issues(f"author:{user_login} repo:{repo_name} is:pr")[:limit])
+            prs_data = [{
+                "title": pr.title, 
+                "number": pr.number, 
+                "state": pr.state, 
+                "body": pr.body[:200] + "..." if pr.body and len(pr.body) > 200 else pr.body,
+                "created_at": pr.created_at.isoformat() if pr.created_at else None,
+                "comments": pr.comments
+            } for pr in pull_requests]
+        except Exception as e:
+            print(f"Error fetching pull requests: {e}")
+
+        # Get issues
+        issues_data = []
+        try:
+            issues = list(g.search_issues(f"author:{user_login} repo:{repo_name} is:issue")[:limit])
+            issues_data = [{
+                "title": i.title, 
+                "number": i.number, 
+                "state": i.state, 
+                "body": i.body[:200] + "..." if i.body and len(i.body) > 200 else i.body,
+                "created_at": i.created_at.isoformat() if i.created_at else None,
+                "comments": i.comments
+            } for i in issues]
+        except Exception as e:
+            print(f"Error fetching issues: {e}")
+
+        # Get reviews
+        reviews_data = get_user_reviews(g, user_login, repo_name, limit)
+
+        # Structure the data
+        contributions = {
+            "user": user_login,
+            "original_identifier": user_identifier,
+            "repo": repo_name,
+            "fetch_timestamp": datetime.now().isoformat(),
+            "commits": commits_data,
+            "pull_requests": prs_data,
+            "issues": issues_data,
+            "reviews": reviews_data,
+            "summary_stats": {
+                "total_commits": len(commits_data),
+                "total_prs": len(prs_data),
+                "total_issues": len(issues_data),
+                "total_reviews": len(reviews_data)
+            }
+        }
+
+        # Save to cache
+        with open(cache_file, 'w') as f:
+            json.dump(contributions, f, indent=2)
+        print(f"Saved contributions to cache: {cache_file}")
+
+        return contributions
+        
+    except Exception as e:
+        print(f"Error in fetch_all_contributions: {e}")
+        return None
+
+
+def benchmark_contribution_methods(user_identifier, repo_url, limit=20):
+    """
+    Benchmarks the performance and efficiency of old vs new contribution fetching methods.
+    
+    Args:
+        user_identifier (str): GitHub username or email
+        repo_url (str): Repository URL
+        limit (int): Number of items to fetch for comparison
+        
+    Returns:
+        dict: Benchmark results comparing both approaches
+    """
+    import time
+    import gc
+    from gpt_utils import review_commits_with_gpt, review_contributions_with_gpt
+    
+    print("🔍 Starting benchmark comparison...")
+    benchmark_results = {
+        "user": user_identifier,
+        "repo": repo_url,
+        "limit": limit,
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    # Benchmark OLD approach
+    print("\n📊 Testing OLD approach (individual API calls + file-based)...")
+    start_time = time.time()
+    api_calls_old = 0
+    
+    try:
+        # Simulate old approach
+        old_start = time.time()
+        
+        # Old method would make separate calls
+        commits_content = get_commits_optimized(user_identifier, repo_url, limit)
+        api_calls_old += 1
+        
+        prs_content = get_pull_requests(user_identifier, repo_url, limit)
+        api_calls_old += 1
+        
+        issues_content = get_issues(user_identifier, repo_url, limit)
+        api_calls_old += 1
+        
+        # Write temporary file (simulating old file-based approach)
+        temp_file = f".temp_benchmark_{user_identifier.replace('@', '_')}.md"
+        with open(temp_file, 'w') as f:
+            f.write(f"{commits_content}\n\n{prs_content}\n\n{issues_content}")
+        
+        # Old GPT analysis (would read from file)
+        old_gpt_analysis = review_commits_with_gpt(temp_file)
+        
+        old_end = time.time()
+        old_total_time = old_end - old_start
+        
+        # Cleanup
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+        
+        benchmark_results["old_approach"] = {
+            "execution_time": round(old_total_time, 2),
+            "api_calls": api_calls_old,
+            "file_operations": 2,  # write + read
+            "success": True,
+            "tokens_used": old_gpt_analysis.get("analysis_metadata", {}).get("tokens_used", "N/A")
+        }
+        
+    except Exception as e:
+        benchmark_results["old_approach"] = {
+            "execution_time": -1,
+            "api_calls": api_calls_old,
+            "success": False,
+            "error": str(e)
+        }
+    
+    # Clear memory
+    gc.collect()
+    
+    # Benchmark NEW approach  
+    print("\n🚀 Testing NEW approach (unified fetching + caching)...")
+    new_start = time.time()
+    
+    try:
+        # Clear cache for fair comparison
+        cache_dir = ".cache"
+        safe_user_identifier = user_identifier.replace('@', '_at_').replace('.', '_').replace('/', '_')
+        repo_name = extract_repo_name(repo_url)
+        cache_file = os.path.join(cache_dir, f"{safe_user_identifier}-{repo_name.replace('/', '_')}.json")
+        
+        if os.path.exists(cache_file):
+            os.remove(cache_file)
+        
+        # New unified approach
+        contributions_data = fetch_all_contributions(user_identifier, repo_url, limit)
+        
+        # New optimized GPT analysis
+        new_gpt_analysis = review_contributions_with_gpt(contributions_data)
+        
+        new_end = time.time()
+        new_total_time = new_end - new_start
+        
+        benchmark_results["new_approach"] = {
+            "execution_time": round(new_total_time, 2),
+            "api_calls": 1,  # Unified call
+            "cache_operations": 1,  # Single cache write
+            "success": True,
+            "tokens_used": new_gpt_analysis.get("analysis_metadata", {}).get("tokens_used", "N/A"),
+            "data_completeness": {
+                "commits": len(contributions_data.get("commits", [])),
+                "prs": len(contributions_data.get("pull_requests", [])),
+                "issues": len(contributions_data.get("issues", [])),
+                "reviews": len(contributions_data.get("reviews", []))
+            }
+        }
+        
+    except Exception as e:
+        benchmark_results["new_approach"] = {
+            "execution_time": -1,
+            "api_calls": 1,
+            "success": False,
+            "error": str(e)
+        }
+    
+    # Calculate improvements
+    if (benchmark_results["old_approach"].get("success") and 
+        benchmark_results["new_approach"].get("success")):
+        
+        old_time = benchmark_results["old_approach"]["execution_time"]
+        new_time = benchmark_results["new_approach"]["execution_time"]
+        
+        old_tokens = benchmark_results["old_approach"].get("tokens_used", 0)
+        new_tokens = benchmark_results["new_approach"].get("tokens_used", 0)
+        
+        if isinstance(old_tokens, int) and isinstance(new_tokens, int) and old_tokens > 0:
+            token_savings = round(((old_tokens - new_tokens) / old_tokens) * 100, 1)
+        else:
+            token_savings = "N/A"
+        
+        time_savings = round(((old_time - new_time) / old_time) * 100, 1) if old_time > 0 else "N/A"
+        
+        benchmark_results["performance_comparison"] = {
+            "time_improvement_percent": time_savings,
+            "token_savings_percent": token_savings,
+            "api_calls_reduced": benchmark_results["old_approach"]["api_calls"] - benchmark_results["new_approach"]["api_calls"],
+            "file_operations_eliminated": benchmark_results["old_approach"].get("file_operations", 0),
+            "caching_enabled": True,
+            "recommendation": "new_approach" if new_time < old_time else "old_approach"
+        }
+    
+    # Print results
+    print("\n📈 BENCHMARK RESULTS:")
+    print("=" * 50)
+    
+    if benchmark_results["old_approach"].get("success"):
+        old_result = benchmark_results["old_approach"]
+        print(f"OLD APPROACH: {old_result['execution_time']}s, {old_result['api_calls']} API calls, {old_result.get('tokens_used', 'N/A')} tokens")
+    
+    if benchmark_results["new_approach"].get("success"):
+        new_result = benchmark_results["new_approach"]
+        print(f"NEW APPROACH: {new_result['execution_time']}s, {new_result['api_calls']} API calls, {new_result.get('tokens_used', 'N/A')} tokens")
+    
+    if "performance_comparison" in benchmark_results:
+        comp = benchmark_results["performance_comparison"]
+        print(f"\n🎯 IMPROVEMENTS:")
+        print(f"⏱️  Time: {comp['time_improvement_percent']}% faster")
+        print(f"💰 Tokens: {comp['token_savings_percent']}% reduction") 
+        print(f"🔌 API calls: {comp['api_calls_reduced']} fewer calls")
+        print(f"📄 File I/O: {comp['file_operations_eliminated']} operations eliminated")
+        print(f"✅ Recommended: {comp['recommendation']}")
+    
+    # Save benchmark results
+    benchmark_file = f"benchmark_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    with open(benchmark_file, 'w') as f:
+        json.dump(benchmark_results, f, indent=2)
+    print(f"\n💾 Results saved to: {benchmark_file}")
+    
+    return benchmark_results

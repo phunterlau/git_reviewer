@@ -18,14 +18,14 @@ git_review/
 │   ├── __init__.py                           # Core analysis module exports
 │   ├── optimized_hybrid_analyzer.py          # Production hybrid analyzer (main engine)
 │   ├── cis_scorer.py                         # CIS scoring system with g-index calculation
-│   ├── improved_hybrid_analyzer.py           # Legacy hybrid analyzer
+│   ├── improved_hybrid_analyzer.py           # Enhanced hybrid analyzer
 │   └── enhanced_cis_scoring.py               # Enhanced CIS implementation
 │
 ├── 🔌 GITHUB INTEGRATION (github_integration/)
 │   ├── __init__.py                           # GitHub integration exports
 │   ├── github_utils.py                       # Optimized GitHub API with caching
 │   ├── github_utils_optimized.py             # Performance-focused GitHub utilities
-│   ├── github_utils_backup.py                # Original GitHub utilities
+│   ├── github_utils_backup.py                # Backup GitHub utilities
 │   └── github_activity_tracker.py            # Activity pattern analysis
 │
 ├── 🤖 AI & ANALYSIS (ai_analysis/)
@@ -58,45 +58,16 @@ git_review/
 │   ├── enhanced_founding_engineer_cli.py     # Enhanced CLI with full features
 │   └── phunterlau_report.py                  # Comprehensive analysis example
 │
-├── 🧪 OFFICIAL TESTS (tests/)
-│   ├── test_cis_scoring.py                   # CIS scoring system tests
-│   ├── test_gpt_tag_generation.py            # AI tag generation tests
-│   ├── test_integrated_tag_generation.py     # Integration tests
-│   ├── test_modular_system.py                # Modular system tests
-│   ├── test_rule_based_tags.py               # Rule-based tagging tests
-│   ├── test_step1_code_analysis.py           # Code analysis tests
-│   ├── test_step2_collaboration_analysis.py  # Collaboration analysis tests
-│   └── test_updated_data_models.py           # Data model tests
-│
-├── 🔬 INTEGRATION TESTS (temp_test/)
-│   ├── test_*.py                             # Individual component integration tests
-│   ├── validate_*.py                         # System validation scripts
-│   ├── debug_*.py                            # Debug and troubleshooting scripts
-│   ├── demo_*.py                             # Demo and example scripts
-│   ├── comprehensive_*.py                    # Comprehensive analysis scripts
-│   ├── detailed_*.py                         # Detailed analysis scripts
-│   └── analyze_*.py                          # Various analysis scripts
-│
-├── 📚 LEGACY FILES (legacy_files/)
-│   ├── cis_scoring.py                        # Original CIS implementation
-│   └── optimized_cis_calculator.py           # Legacy CIS calculator
-│
-├── 📋 DOCUMENTATION & PLANS
+├── 📋 DOCUMENTATION & ANALYSIS RESULTS
 │   ├── improved_founding_eng.md              # Master system architecture
 │   ├── FOUNDING_ENGINEER_README.md           # System overview
 │   ├── IMPLEMENTATION_COMPLETE.md            # Implementation status
-│   ├── CIS_IMPLEMENTATION_COMPLETE.md        # CIS system documentation
-│   └── PERFORMANCE_OPTIMIZATION_ANALYSIS.md # Performance analysis
-│
-├── 📈 ANALYSIS OUTPUTS & RESULTS
 │   ├── commits_*.md                          # Commit analysis reports
 │   ├── *_analysis_*.json                     # Structured analysis results
-│   ├── benchmark_results_*.json              # Performance benchmarks
-│   └── heatmap_*.json                        # Activity heatmaps
+│   └── benchmark_results_*.json              # Performance benchmarks
 │
-└── ⚙️ CONFIGURATION & ENTRY POINTS
-    ├── main.py                               # Legacy CLI entry point
-    ├── cli.py                                # Modern CLI entry point
+└── ⚙️ CONFIGURATION & ENTRY POINT
+    ├── main.py                               # 🚀 MAIN CLI ENTRY POINT
     ├── pyproject.toml                        # Project configuration
     ├── requirements.txt                      # Python dependencies
     └── README.md                             # This documentation
@@ -114,7 +85,9 @@ export OPENAI_API_KEY="your_openai_api_key_here"
 uv sync  # or pip install -r requirements.txt
 ```
 
-### Basic Usage
+### 🎯 Single Entry Point: `main.py`
+
+The entire system is accessible through a single, powerful CLI entry point:
 
 **1. 🌟 Founding Engineer Analysis (Comprehensive Cross-Repository)**
 
@@ -146,10 +119,12 @@ uv run main.py --user username --repo owner/repo --type issues
 uv run main.py --user username --repo owner/repo --type pull_requests
 ```
 
-**3. 🔧 Advanced Production System (Programmatic Access)**
+### 🔧 Advanced Usage (Programmatic Access)
+
+For advanced users who need direct access to the analysis engines:
 
 ```bash
-# Run comprehensive founding engineer analysis (low-level API)
+# Direct access to optimized hybrid analyzer
 uv run python -c "
 import asyncio
 from core_analysis import OptimizedHybridAnalyzer
@@ -164,13 +139,14 @@ async def analyze():
 asyncio.run(analyze())
 "
 
-# Generate comprehensive report (like phunterlau example)
+# Generate comprehensive production report
 uv run python production_tools/phunterlau_report.py
 ```
 
-**4. 🧮 CIS Score Calculation (Academic Research)**
+### 🧮 Academic CIS Research
 
 ```bash
+# Calculate academic-style CIS scores
 uv run python -c "
 from core_analysis import ContributionImpactScorer
 import os
@@ -292,9 +268,11 @@ Built for scalability, performance, and real-world founding engineer evaluation 
 
 ## � Command Line Interface
 
-### Enhanced Main CLI (main.py)
+## 💻 Command Line Interface
 
-The enhanced `main.py` provides two primary analysis modes:
+### 🚀 Single Entry Point: `main.py`
+
+The system provides a unified CLI interface through `main.py` with two primary analysis modes:
 
 #### 🌟 Founding Engineer Analysis
 ```bash
@@ -329,6 +307,61 @@ uv run main.py --user username --repo owner/repo --type pull_requests
 - AI-powered GPT-4 review and assessment
 - Detailed commit, issue, and PR analysis
 - Professional programming expertise evaluation
+
+### ⚙️ Command Reference
+
+#### Required Arguments
+```bash
+--user, -u          # GitHub username (required for all analysis types)
+```
+
+#### Analysis Mode Selection
+```bash
+--type              # Analysis type:
+                    #   founding_engineer: Cross-repository founding engineer analysis
+                    #   all: Complete repository analysis (commits + issues + PRs)  
+                    #   commits: Commit analysis only
+                    #   issues: Issue analysis only
+                    #   pull_requests: Pull request analysis only
+
+--repo, -r          # Repository URL (required for repository-specific analysis)
+                    # Format: https://github.com/owner/repo or owner/repo
+```
+
+#### Optional Parameters
+```bash
+--limit, -l         # Maximum records to fetch per type (default: 100)
+                    # Applies to commits, issues, and pull requests
+```
+
+### 📋 Usage Examples
+
+#### Founding Engineer Evaluation
+```bash
+# Quick founding engineer assessment
+uv run main.py --type founding_engineer --user torvalds
+
+# Expected output format:
+# 🎯 FOUNDING ENGINEER ASSESSMENT:
+# 👤 User: Linus Torvalds  
+# 🧠 G-Index: 8
+# 📈 Contributions Analyzed: 150+
+# 🏆 RECOMMENDATION: 🌟 HIGHLY RECOMMENDED
+# 💾 Results saved to: founding_engineer_analysis_torvalds_[timestamp].json
+```
+
+#### Repository Deep Dive
+```bash
+# Complete repository analysis with AI insights
+uv run main.py --user username --repo facebook/react --type all --limit 20
+
+# Expected output format:
+# 📊 PROGRAMMER REVIEW SUMMARY
+# Overall Rating: Senior Developer
+# Programming Expertise: Advanced React/JavaScript, strong architectural skills
+# Key Highlights: [AI-generated insights]
+# Generated files: commits_username.md, commits_username_review.json
+```
 
 ### Command Line Options
 

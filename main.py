@@ -25,9 +25,37 @@ import os
 import sys
 import argparse
 import asyncio
-from dotenv import load_dotenv
-from github_integration import get_commits, get_issues, get_pull_requests, fetch_all_contributions, benchmark_contribution_methods
-from ai_analysis import review_commits_with_gpt, get_contribution_heatmap, review_contributions_with_gpt
+from datetime import datetime, timedelta
+from collections import Counter, defaultdict
+
+# Optional dependency handling
+try:
+    from dotenv import load_dotenv  # type: ignore
+except ImportError:  # pragma: no cover
+    def load_dotenv():  # fallback no-op
+        pass
+
+try:
+    from github import Github  # type: ignore
+    from github.GithubException import GithubException, RateLimitExceededException  # type: ignore
+except ImportError:  # pragma: no cover
+    Github = None  # type: ignore
+    class GithubException(Exception):
+        pass
+    class RateLimitExceededException(GithubException):
+        pass
+from github_integration import (
+    get_commits,
+    get_issues,
+    get_pull_requests,
+    fetch_all_contributions,
+    benchmark_contribution_methods,
+)
+from ai_analysis import (
+    review_commits_with_gpt,
+    get_contribution_heatmap,
+    review_contributions_with_gpt,
+)
 from core_analysis import OptimizedHybridAnalyzer, ContributionImpactScorer
 
 
@@ -68,9 +96,9 @@ Advanced Features:
     
     parser.add_argument(
         '--type', '-t',
-        choices=['commits', 'issues', 'pull_requests', 'all', 'founding_engineer'],
+        choices=['commits', 'issues', 'pull_requests', 'all', 'founding_engineer', 'recent_quality'],
         default='commits',
-        help='Type of analysis to perform (default: commits). Use "founding_engineer" for comprehensive cross-repository founding engineer analysis'
+        help='Analysis type: commits/issues/pull_requests/all/founding_engineer/recent_quality'
     )
     
     parser.add_argument(
@@ -110,6 +138,20 @@ Advanced Features:
         '--benchmark',
         action='store_true',
         help='Run performance benchmark comparing old vs new approaches'
+    )
+
+    parser.add_argument(
+        '--recent-days',
+        type=int,
+        default=30,
+        help='Time window in days for recent_quality analysis (default: 30)'
+    )
+
+    parser.add_argument(
+        '--max-commits',
+        type=int,
+        default=250,
+        help='Maximum commits to inspect per user for recent_quality (default: 250)'
     )
     
     return parser.parse_args()
@@ -250,6 +292,337 @@ def run_founding_engineer_analysis(username: str, limit: int):
         return 1
 
 
+def run_recent_code_quality_review(user_arg: str, days: int = 30, max_commits: int = 250):
+    """Analyze recent commit code quality for one or multiple GitHub users.
+
+    Pulls commits (last N days) across ALL public repos for each user, fetches diffs, filters
+    out non-code changes, computes quality & engineering capability indicators, and
+    summarizes attributes relevant to founding engineer potential.
+
+    Args:
+        user_arg: A single username or comma-separated list of usernames.
+        days: Lookback window (default 30 days)
+        max_commits: Safety cap on number of commits (per user)
+    """
+    token = os.getenv('GITHUB_TOKEN')
+    if not token:
+        print("❌ GITHUB_TOKEN not set.")
+        return 1
+
+    gh = Github(token, per_page=100)
+    usernames = [u.strip() for u in user_arg.split(',') if u.strip()]
+    since = datetime.utcnow() - timedelta(days=days)
+
+    # Simple code file extensions (can expand)
+    code_exts = {
+        '.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.rs', '.cpp', '.cc', '.c', '.h', '.hpp',
+        '.java', '.kt', '.rb', '.php', '.swift', '.scala', '.cs', '.sh', '.bash', '.zsh',
+        '.ps1', '.sql', '.html', '.css', '.scss', '.lua', '.mdx'
+    }
+    non_code_exts = {'.md', '.rst', '.txt', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.pdf', '.lock'}
+
+    def is_code_file(filename: str) -> bool:
+        fn = filename.lower()
+        for ext in non_code_exts:
+            if fn.endswith(ext):
+                return False
+        return any(fn.endswith(ext) for ext in code_exts)
+
+    def classify_commit(msg: str):
+        lower = msg.lower()
+        if any(k in lower for k in ['refactor', 'cleanup', 'restructure']):
+            return 'refactor'
+        if any(k in lower for k in ['feat', 'feature', 'add', 'implement']):
+            return 'feature'
+        if any(k in lower for k in ['fix', 'bug', 'patch']):
+            return 'bugfix'
+        if any(k in lower for k in ['perf', 'optimiz', 'speed', 'latency']):
+            return 'performance'
+        if any(k in lower for k in ['test', 'ci', 'coverage']):
+            return 'testing'
+        if any(k in lower for k in ['doc', 'readme']):
+            return 'docs'
+        return 'other'
+
+    for username in usernames:
+        print("=" * 60)
+        print(f"🧪 Recent Code Quality Review: {username} (last {days} days)")
+        print("=" * 60)
+        try:
+            user = gh.get_user(username)
+        except GithubException as e:
+            print(f"❌ Failed to fetch user {username}: {e}")
+            continue
+
+        # Collect commits across repos
+        all_commits_meta = []  # (repo_name, commit)
+        try:
+            repos = list(user.get_repos())
+        except RateLimitExceededException:
+            print("❌ Rate limit exceeded while listing repos.")
+            return 1
+        except GithubException as e:
+            print(f"❌ Error fetching repos: {e}")
+            continue
+
+        for repo in repos:
+            try:
+                commits = repo.get_commits(author=user, since=since)
+                for c in commits:
+                    all_commits_meta.append((repo, c))
+                    if len(all_commits_meta) >= max_commits:
+                        break
+                if len(all_commits_meta) >= max_commits:
+                    break
+            except GithubException:
+                continue  # skip private/inaccessible
+
+        total_found = len(all_commits_meta)
+        if total_found == 0:
+            print(f"⚠️  No commits found in the last {days} days.")
+            continue
+
+        print(f"🔍 Found {total_found} commits (pre-filter). Fetching diffs & analyzing...")
+
+        # Metrics containers
+        commit_type_counter = Counter()
+        language_counter = Counter()
+        test_commits = 0
+        perf_commits = 0
+        refactor_commits = 0
+        total_adds = 0
+        total_dels = 0
+        code_commits = 0
+        large_changes = 0
+        commits_detail = []              # lightweight summary list used for top commit selection
+        full_commit_records = []         # full enriched commit data for JSON output
+
+        def render_progress(i, n, bar_len=30):
+            filled = int(bar_len * (i + 1) / n)
+            bar = '█' * filled + '░' * (bar_len - filled)
+            print(f"\rProgress: [{bar}] {i + 1}/{n}", end='')
+
+        for idx, (repo, commit_stub) in enumerate(all_commits_meta):
+            render_progress(idx, total_found)
+            try:
+                # Need full commit to access files/diff
+                full_commit = repo.get_commit(commit_stub.sha)
+            except GithubException:
+                continue
+
+            files = getattr(full_commit, 'files', []) or []
+            code_files = [f for f in files if is_code_file(f.filename)]
+            if not code_files:
+                continue  # ignore non-code change commits
+
+            code_commits += 1
+            adds = sum(f.additions for f in code_files)
+            dels = sum(f.deletions for f in code_files)
+            total_adds += adds
+            total_dels += dels
+            if adds + dels > 400:  # heuristic threshold for large / architectural change
+                large_changes += 1
+
+            message = full_commit.commit.message.split('\n')[0]
+            ctype = classify_commit(message)
+            commit_type_counter[ctype] += 1
+            if ctype == 'testing':
+                test_commits += 1
+            if ctype == 'performance':
+                perf_commits += 1
+            if ctype == 'refactor':
+                refactor_commits += 1
+
+            # Approximate languages by extension
+            exts = {os.path.splitext(f.filename)[1].lower() for f in code_files}
+            for ext in exts:
+                language_counter[ext] += 1
+
+            # Build per-file details
+            file_details = []
+            for f in code_files:
+                patch_text = getattr(f, 'patch', None)
+                if patch_text and len(patch_text) > 15000:  # safety truncate
+                    patch_text = patch_text[:15000] + '\n...TRUNCATED...'
+                file_details.append({
+                    'filename': f.filename,
+                    'status': getattr(f, 'status', None),
+                    'additions': getattr(f, 'additions', 0),
+                    'deletions': getattr(f, 'deletions', 0),
+                    'changes': getattr(f, 'changes', None),
+                    'patch': patch_text,
+                })
+
+            is_merge = len(getattr(full_commit, 'parents', []) or []) > 1
+            authored_date = None
+            committed_date = None
+            try:
+                authored_date = full_commit.commit.author.date.isoformat() if full_commit.commit.author and full_commit.commit.author.date else None
+            except Exception:
+                pass
+            try:
+                committed_date = full_commit.commit.committer.date.isoformat() if full_commit.commit.committer and full_commit.commit.committer.date else None
+            except Exception:
+                pass
+
+            commit_summary = {
+                'repo': repo.full_name,
+                'sha': full_commit.sha,
+                'message': message,
+                'additions': adds,
+                'deletions': dels,
+                'files_changed': len(code_files),
+                'type': ctype,
+            }
+            commits_detail.append(commit_summary)
+
+            full_commit_records.append({
+                'repo': repo.full_name,
+                'sha': full_commit.sha,
+                'html_url': getattr(full_commit, 'html_url', None),
+                'url': getattr(full_commit, 'url', None),
+                'is_merge': is_merge,
+                'authored_date': authored_date,
+                'committed_date': committed_date,
+                'author': getattr(full_commit.commit.author, 'name', None) if getattr(full_commit, 'commit', None) else None,
+                'author_email': getattr(full_commit.commit.author, 'email', None) if getattr(full_commit, 'commit', None) else None,
+                'committer': getattr(full_commit.commit.committer, 'name', None) if getattr(full_commit, 'commit', None) else None,
+                'committer_email': getattr(full_commit.commit.committer, 'email', None) if getattr(full_commit, 'commit', None) else None,
+                'message_full': full_commit.commit.message if getattr(full_commit, 'commit', None) else message,
+                'summary': commit_summary,
+                'additions': adds,
+                'deletions': dels,
+                'total_changes': adds + dels,
+                'files': file_details,
+                'languages_ext': list(exts),
+                'classification': ctype,
+                'verification': (lambda v: {
+                    'verified': getattr(v, 'verified', None),
+                    'reason': getattr(v, 'reason', None),
+                    'signature': getattr(v, 'signature', None),
+                    'payload': getattr(v, 'payload', None),
+                } if v else None)(getattr(getattr(full_commit, 'commit', None), 'verification', None) if getattr(full_commit, 'commit', None) else None),
+            })
+
+        print()  # newline after progress bar
+        if code_commits == 0:
+            print("⚠️  No code commits after filtering non-code changes.")
+            continue
+
+        avg_adds = total_adds / code_commits
+        avg_dels = total_dels / code_commits
+        test_ratio = test_commits / code_commits
+        refactor_ratio = refactor_commits / code_commits
+        perf_ratio = perf_commits / code_commits
+        large_ratio = large_changes / code_commits
+
+        # Derive capability attributes
+        capability_attrs = []
+        if refactor_ratio >= 0.15:
+            capability_attrs.append("Architectural Stewardship (significant refactoring activity)")
+        if test_ratio >= 0.2:
+            capability_attrs.append("Quality Discipline (meaningful share of test-focused commits)")
+        if len(language_counter) >= 4:
+            capability_attrs.append("Polyglot Execution (works across multiple stacks)")
+        if perf_ratio >= 0.05:
+            capability_attrs.append("Performance Awareness (explicit optimization work)")
+        if large_ratio >= 0.1:
+            capability_attrs.append("Systems Thinking (handles large / structural changes)")
+        if not capability_attrs:
+            capability_attrs.append("Focused Delivery (consistent incremental feature / bug work)")
+
+        print(f"📊 SUMMARY (Code Commits Only)")
+        print(f"   Total code commits: {code_commits} (from {total_found} raw commits)")
+        print(f"   Lines added: {total_adds} | Lines deleted: {total_dels}")
+        print(f"   Avg additions/commit: {avg_adds:.1f} | Avg deletions/commit: {avg_dels:.1f}")
+        print(f"   Commit type distribution: {dict(commit_type_counter)}")
+        print(f"   Test commit ratio: {test_ratio:.1%} | Refactor ratio: {refactor_ratio:.1%} | Perf ratio: {perf_ratio:.1%}")
+        print(f"   Large structural change ratio: {large_ratio:.1%}")
+        print(f"   Languages (by extension indicators): {', '.join(sorted(language_counter.keys()))}")
+
+        print("\n🧠 FOUNDING ENGINEER ATTRIBUTE SIGNALS:")
+        for attr in capability_attrs:
+            print(f"   • {attr}")
+
+        # Show top 5 significant commits (by size) for inspection
+        top_commits = sorted(commits_detail, key=lambda c: c['additions'] + c['deletions'], reverse=True)[:5]
+        print("\n🔍 Top Significant Commits:")
+        for c in top_commits:
+            print(f"   - {c['repo']}@{c['sha'][:7]} [{c['type']}] +{c['additions']}/-{c['deletions']} {c['message'][:70]}")
+
+        # Simple heuristic overall assessment
+        score = 0
+        score += refactor_ratio * 30
+        score += test_ratio * 20
+        score += perf_ratio * 15
+        score += min(len(language_counter), 6) * 3
+        score += large_ratio * 25
+        if score >= 35:
+            rec = "🌟 Strong Founding Engineer Signals"
+        elif score >= 22:
+            rec = "✅ Solid Engineering Potential"
+        elif score >= 12:
+            rec = "⚠️ Emerging – Needs Broader Impact"
+        else:
+            rec = "❌ Limited Recent Differentiators"
+        print(f"\n🏆 RECENT ACTIVITY ASSESSMENT: {rec} (score: {score:.1f})")
+
+        # Persist JSON output
+        ts_str = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        out_name = f"recent_quality_{username}_{ts_str}.json"
+        commits_file = f"recent_quality_commits_{username}_{ts_str}.json"
+        import json
+        # Metrics / summary file
+        with open(out_name, 'w') as f:
+            json.dump({
+                'username': username,
+                'window_days': days,
+                'generated_at': datetime.utcnow().isoformat(),
+                'raw_commit_count': total_found,
+                'code_commit_count': code_commits,
+                'totals': {
+                    'additions': total_adds,
+                    'deletions': total_dels,
+                },
+                'averages': {
+                    'adds_per_commit': avg_adds,
+                    'dels_per_commit': avg_dels,
+                },
+                'ratios': {
+                    'test_ratio': test_ratio,
+                    'refactor_ratio': refactor_ratio,
+                    'performance_ratio': perf_ratio,
+                    'large_change_ratio': large_ratio,
+                },
+                'languages_ext': list(language_counter.keys()),
+                'commit_type_distribution': dict(commit_type_counter),
+                'capability_attributes': capability_attrs,
+                'top_commits': top_commits,
+                'assessment': {
+                    'score': score,
+                    'recommendation': rec,
+                },
+                'artifacts': {
+                    'full_commit_details_file': commits_file
+                }
+            }, f, indent=2)
+
+        # Full commit record file
+        with open(commits_file, 'w') as f:
+            json.dump({
+                'username': username,
+                'generated_at': datetime.utcnow().isoformat(),
+                'window_start': (datetime.utcnow() - timedelta(days=days)).isoformat(),
+                'window_days': days,
+                'commit_records_count': len(full_commit_records),
+                'commits': full_commit_records,
+            }, f, indent=2)
+
+        print(f"💾 Saved detailed metrics to {out_name}")
+        print(f"💾 Saved full commit records to {commits_file}\n")
+    return 0
+
+
 def main():
     """Main function to run the GitHub commit reviewer."""
     args = parse_arguments()
@@ -300,6 +673,9 @@ def main():
     # Handle founding engineer analysis
     if args.type == 'founding_engineer':
         return run_founding_engineer_analysis(args.user, args.limit)
+    
+    if args.type == 'recent_quality':
+        return run_recent_code_quality_review(args.user, days=args.recent_days, max_commits=args.max_commits)
     
     # Handle benchmark mode
     if args.benchmark:

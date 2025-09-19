@@ -470,4 +470,107 @@ commits_[username]_review.json
 }
 ```
 
+#### Recent 30-Day Code Quality Review (recent_quality)
+
+```bash
+# Analyze recent (default 30 days) code commits across ALL public repos
+uv run main.py --type recent_quality --user username
+
+# Customize window and commit cap
+uv run main.py --type recent_quality --user username --recent-days 45 --max-commits 400
+
+# Multiple users (comma-separated)
+uv run main.py --type recent_quality --user alice,bob,charlie --recent-days 14
+```
+
+Generates TWO artifacts per user:
+
+1. Summary metrics JSON:
+  `recent_quality_[username]_[timestamp].json`
+2. Full commit detail JSON (per-file diffs & metadata):
+  `recent_quality_commits_[username]_[timestamp].json`
+
+Example summary structure:
+
+```jsonc
+{
+  "username": "phunterlau",
+  "window_days": 30,
+  "raw_commit_count": 33,
+  "code_commit_count": 17,
+  "totals": { "additions": 22305, "deletions": 520 },
+  "averages": { "adds_per_commit": 1312.1, "dels_per_commit": 30.6 },
+  "ratios": {
+    "test_ratio": 0.059,
+    "refactor_ratio": 0.0,
+    "performance_ratio": 0.0,
+    "large_change_ratio": 0.647
+  },
+  "commit_type_distribution": {"other": 12, "feature": 4, "testing": 1},
+  "capability_attributes": [
+    "Systems Thinking (handles large / structural changes)"
+  ],
+  "assessment": {
+    "score": 20.4,
+    "recommendation": "⚠️ Emerging – Needs Broader Impact"
+  },
+  "artifacts": {"full_commit_details_file": "recent_quality_commits_phunterlau_2025...json"}
+}
+```
+
+Full commit detail record excerpt:
+
+```jsonc
+{
+  "repo": "user/project",
+  "sha": "bb387e5...",
+  "is_merge": false,
+  "authored_date": "2025-09-18T12:34:56Z",
+  "classification": "feature",
+  "message_full": "feat: add vector index builder\n\n...",
+  "files": [
+    {
+      "filename": "src/indexer.py",
+      "status": "added",
+      "additions": 210,
+      "deletions": 0,
+      "patch": "@@ ... truncated diff ..."
+    }
+  ],
+  "verification": { "verified": true, "reason": "valid" }
+}
+```
+
+Derived founding-engineer oriented signals:
+
+- Refactor Ratio – structural stewardship
+- Test Ratio – quality discipline
+- Performance Ratio – optimization focus
+- Large Change Ratio – systems / architecture activity
+- Polyglot Extension Count – stack breadth
+- Capability Attributes – human-readable roll‑up
+
+Heuristic Recommendation Scale:
+
+- ≥35: 🌟 Strong Founding Engineer Signals
+- ≥22: ✅ Solid Engineering Potential
+- ≥12: ⚠️ Emerging – Needs Broader Impact
+- <12: ❌ Limited Recent Differentiators
+
+Flags & Options:
+
+```bash
+--type recent_quality      # Activate recent code quality mode
+--recent-days <N>          # Lookback window (default 30)
+--max-commits <N>          # Cap commits per user (default 250)
+```
+
+Dependency Note: requires `PyGithub` (and optional `python-dotenv`). Install via:
+
+```bash
+uv pip install PyGithub python-dotenv
+```
+
+Use this mode to rapidly evaluate recent execution style, structural impact, and breadth indicators aligned with founding engineer expectations.
+
 ---
